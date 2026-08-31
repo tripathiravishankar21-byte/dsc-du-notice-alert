@@ -22,15 +22,21 @@ function cleanUrl(url) {
 }
 
 
+/*
+ * Stable notice identity.
+ *
+ * Category is intentionally NOT included.
+ * This prevents a notice from becoming "new"
+ * if its category is corrected later.
+ */
 function makeNoticeKey(notice) {
-  const title = String(notice.title || "")
-    .replace(/\s+/g, " ")
+  const source = String(notice.source || "")
     .trim()
     .toLowerCase();
 
   const url = cleanUrl(notice.url);
 
-  return `${notice.source}|${notice.category}|${title}|${url}`;
+  return `${source}|${url}`;
 }
 
 
@@ -40,7 +46,7 @@ function makeNoticeKey(notice) {
 function classifyDUNotice(title) {
   const text = String(title || "").toLowerCase();
 
-  // Recruitment gets highest priority
+  // Recruitment has highest priority
   if (
     text.includes("advertisement no.") ||
     text.includes("advertisement no") ||
@@ -91,15 +97,17 @@ function classifyDUNotice(title) {
   return "General University";
 }
 
+
 /*
- * Prepare DU notices with a useful category.
+ * Prepare DU notices.
  */
 function prepareDUNotices(notices) {
   return notices.map((notice) => ({
     source: "University of Delhi",
     category: classifyDUNotice(notice.title),
     title: String(notice.title || "").trim(),
-    url: cleanUrl(notice.url)
+    url: cleanUrl(notice.url),
+    notice_date: notice.notice_date || null
   }));
 }
 
@@ -155,11 +163,10 @@ function buildTelegramMessage(notice) {
     sourceEmoji = "🎓";
   }
 
+
   let categoryEmoji = "📢";
 
-  if (
-    category === "Student"
-  ) {
+  if (category === "Student") {
     categoryEmoji = "👥";
   }
 
@@ -182,22 +189,38 @@ function buildTelegramMessage(notice) {
     categoryEmoji = "🏛️";
   }
 
-  return (
+
+  let message =
     `<b>${sourceEmoji} NEW NOTICE</b>\n\n` +
 
     `<b>Source:</b> ${escapeHtml(source)}\n` +
 
     `<b>Type:</b> ${categoryEmoji} ${escapeHtml(category)}\n\n` +
 
-    `<b>📌 ${title}</b>\n\n` +
+    `<b>📌 ${title}</b>`;
 
-    `🔗 <a href="${url}">View Official Notice</a>`
-  );
+
+  /*
+   * Add date only when scraper provides it.
+   */
+  if (notice.notice_date) {
+    message +=
+      `\n\n📅 <b>Date:</b> ${escapeHtml(
+        notice.notice_date
+      )}`;
+  }
+
+
+  message +=
+    `\n\n🔗 <a href="${url}">View Official Notice</a>`;
+
+
+  return message;
 }
 
 
 /*
- * Send notification to Telegram.
+ * Send Telegram message.
  */
 async function sendTelegramMessage(notice) {
   const token = process.env.TELEGRAM_BOT_TOKEN;
@@ -209,7 +232,8 @@ async function sendTelegramMessage(notice) {
     );
   }
 
-  const message = buildTelegramMessage(notice);
+  const message =
+    buildTelegramMessage(notice);
 
   const response = await fetch(
     `https://api.telegram.org/bot${token}/sendMessage`,
@@ -242,13 +266,7 @@ async function sendTelegramMessage(notice) {
 
 
 /*
- * Process one category.
- *
- * First run:
- * Save existing notices only.
- *
- * Later runs:
- * New notices are sent to Telegram.
+ * Process notices.
  */
 async function processCategory(
   notices,
@@ -265,10 +283,20 @@ async function processCategory(
 
     const cleanNotice = {
       source: String(notice.source || "").trim(),
-      category: String(notice.category || "").trim(),
-      title: String(notice.title || "").trim(),
-      url: cleanUrl(notice.url)
+
+      category:
+        String(notice.category || "").trim(),
+
+      title:
+        String(notice.title || "").trim(),
+
+      url:
+        cleanUrl(notice.url),
+
+      notice_date:
+        notice.notice_date || null
     };
+
 
     if (
       !cleanNotice.source ||
@@ -279,25 +307,84 @@ async function processCategory(
       continue;
     }
 
-    const noticeKey = makeNoticeKey(cleanNotice);
-
-    const encodedKey =
-      encodeURIComponent(noticeKey);
 
     /*
-     * Check duplicate.
+     * Stable identity.
      */
-    const existing = await supabaseRequest(
-      `notices?select=id,sent&notice_key=eq.${encodedKey}&limit=1`
-    );
+    const noticeKey =
+      makeNoticeKey(cleanNotice);
 
-    if (existing && existing.length > 0) {
+
+    /*
+     * Find existing notice by source + URL.
+     *
+     * This is intentionally independent
+     * of category.
+     */
+    const encodedSource =
+      encodeURIComponent(
+        cleanNotice.source
+      );
+
+    const encodedUrl =
+      encodeURIComponent(
+        cleanNotice.url
+      );
+
+
+    const existing =
+      await supabaseRequest(
+        `notices?select=id,sent,category&source=eq.${encodedSource}&url=eq.${encodedUrl}&limit=1`
+      );
+
+
+    /*
+     * Existing notice.
+     */
+    if (
+      existing &&
+      existing.length > 0
+    ) {
+
+      /*
+       * If the category changed,
+       * update the existing record.
+       */
+      const existingRecord =
+        existing[0];
+
+      if (
+        existingRecord.category !==
+        cleanNotice.category
+      ) {
+
+        await supabaseRequest(
+          `notices?id=eq.${existingRecord.id}`,
+          {
+            method: "PATCH",
+
+            headers: {
+              Prefer: "return=minimal"
+            },
+
+            body: JSON.stringify({
+              category:
+                cleanNotice.category,
+
+              notice_date:
+                cleanNotice.notice_date
+            })
+          }
+        );
+      }
+
       skipped++;
       continue;
     }
 
+
     /*
-     * Save notice.
+     * Insert new notice.
      */
     await supabaseRequest(
       "notices",
@@ -310,36 +397,47 @@ async function processCategory(
 
         body: JSON.stringify({
           ...cleanNotice,
-          notice_key: noticeKey,
+
+          notice_key:
+            noticeKey,
+
           sent: false
         })
       }
     );
 
+
     inserted++;
 
+
     /*
-     * First run = baseline only.
+     * First run = baseline.
      *
-     * Do NOT send old notices.
+     * Existing website notices are saved,
+     * but NOT sent to Telegram.
      */
     if (isFirstRun) {
       continue;
     }
 
+
     /*
-     * New notice = send Telegram.
+     * New notice = Telegram alert.
      */
     try {
+
       await sendTelegramMessage(
         cleanNotice
       );
+
 
       /*
        * Mark as sent.
        */
       await supabaseRequest(
-        `notices?notice_key=eq.${encodedKey}`,
+        `notices?notice_key=eq.${encodeURIComponent(
+          noticeKey
+        )}`,
         {
           method: "PATCH",
 
@@ -353,9 +451,11 @@ async function processCategory(
         }
       );
 
+
       sent++;
 
     } catch (telegramError) {
+
       failed++;
 
       console.error(
@@ -363,6 +463,7 @@ async function processCategory(
       );
     }
   }
+
 
   return {
     checked,
@@ -375,8 +476,8 @@ async function processCategory(
 
 
 /*
- * Check whether a specific source/category
- * already has a baseline in Supabase.
+ * Check whether a source/category
+ * already has a baseline.
  */
 async function isCategoryFirstRun(
   source,
@@ -388,11 +489,15 @@ async function isCategoryFirstRun(
   const encodedCategory =
     encodeURIComponent(category);
 
-  const rows = await supabaseRequest(
-    `notices?select=id&source=eq.${encodedSource}&category=eq.${encodedCategory}&limit=1`
-  );
+  const rows =
+    await supabaseRequest(
+      `notices?select=id&source=eq.${encodedSource}&category=eq.${encodedCategory}&limit=1`
+    );
 
-  return !rows || rows.length === 0;
+  return (
+    !rows ||
+    rows.length === 0
+  );
 }
 
 
@@ -403,6 +508,7 @@ export default async function handler(
   req,
   res
 ) {
+
   try {
 
     /*
@@ -434,7 +540,7 @@ export default async function handler(
 
 
     /*
-     * Fetch DSC.
+     * DSC
      */
     const dscStudent =
       await getDSCStudentNotices();
@@ -444,23 +550,26 @@ export default async function handler(
 
 
     /*
-     * Fetch DU.
+     * DU
      */
     const duRaw =
       await getDUNotices();
 
     const duNotices =
-      prepareDUNotices(duRaw);
+      prepareDUNotices(
+        duRaw
+      );
 
 
     /*
-     * Find first-run status separately.
+     * First-run status.
      */
     const dscStudentFirstRun =
       await isCategoryFirstRun(
         "Dyal Singh College",
         "Student"
       );
+
 
     const dscTeachingFirstRun =
       await isCategoryFirstRun(
@@ -470,8 +579,7 @@ export default async function handler(
 
 
     /*
-     * DU can contain multiple categories.
-     * Each category gets its own baseline.
+     * DU categories.
      */
     const duCategories = [
       "Student",
@@ -481,9 +589,15 @@ export default async function handler(
       "General University"
     ];
 
+
     const duFirstRun = {};
 
-    for (const category of duCategories) {
+
+    for (
+      const category
+      of duCategories
+    ) {
+
       duFirstRun[category] =
         await isCategoryFirstRun(
           "University of Delhi",
@@ -493,49 +607,70 @@ export default async function handler(
 
 
     /*
-     * Process DSC Student.
+     * DSC Student.
      */
     const studentResult =
       await processCategory(
-        dscStudent.map((notice) => ({
-          ...notice,
-          source: "Dyal Singh College",
-          category: "Student"
-        })),
+        dscStudent.map(
+          (notice) => ({
+            ...notice,
+
+            source:
+              "Dyal Singh College",
+
+            category:
+              "Student"
+          })
+        ),
+
         dscStudentFirstRun
       );
 
 
     /*
-     * Process DSC Teaching.
+     * DSC Teaching.
      */
     const teachingResult =
       await processCategory(
-        dscTeaching.map((notice) => ({
-          ...notice,
-          source: "Dyal Singh College",
-          category: "Teaching"
-        })),
+        dscTeaching.map(
+          (notice) => ({
+            ...notice,
+
+            source:
+              "Dyal Singh College",
+
+            category:
+              "Teaching"
+          })
+        ),
+
         dscTeachingFirstRun
       );
 
 
     /*
-     * Process DU categories separately.
+     * DU categories.
      */
     const duResults = {};
 
-    for (const category of duCategories) {
+
+    for (
+      const category
+      of duCategories
+    ) {
 
       const categoryNotices =
         duNotices.filter(
           (notice) =>
-            notice.category === category
+            notice.category ===
+            category
         );
+
 
       duResults[category] =
         await processCategory(
           categoryNotices,
+
           duFirstRun[category]
         );
     }
@@ -545,36 +680,47 @@ export default async function handler(
      * Final response.
      */
     return res.status(200).json({
+
       success: true,
 
       dsc: {
+
         student: {
-          mode: dscStudentFirstRun
-            ? "BASELINE"
-            : "MONITORING",
+          mode:
+            dscStudentFirstRun
+              ? "BASELINE"
+              : "MONITORING",
 
           ...studentResult
         },
 
         teaching: {
-          mode: dscTeachingFirstRun
-            ? "BASELINE"
-            : "MONITORING",
+          mode:
+            dscTeachingFirstRun
+              ? "BASELINE"
+              : "MONITORING",
 
           ...teachingResult
         }
+
       },
 
       du: duResults
+
     });
+
 
   } catch (error) {
 
     console.error(error);
 
     return res.status(500).json({
+
       success: false,
-      error: error.message
+
+      error:
+        error.message
+
     });
   }
 }
