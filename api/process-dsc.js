@@ -1,4 +1,7 @@
-import { getDSCStudentNotices } from "../lib/dsc.js";
+import {
+  getDSCStudentNotices,
+  getDSCTeachingNotices
+} from "../lib/dsc.js";
 
 function escapeHtml(text) {
   return String(text)
@@ -64,7 +67,7 @@ async function sendTelegramMessage(notice) {
   const url = cleanUrl(notice.url);
 
   const message =
-    `<b>📢 New DSC Student Notice</b>\n\n` +
+    `<b>📢 New DSC ${notice.category} Notice</b>\n\n` +
     `<b>${title}</b>\n\n` +
     `🔗 <a href="${url}">View Notice</a>\n\n` +
     `🏫 Dyal Singh College`;
@@ -96,6 +99,110 @@ async function sendTelegramMessage(notice) {
   return data;
 }
 
+async function processCategory(
+  notices,
+  category,
+  isFirstRun
+) {
+  let checked = 0;
+  let inserted = 0;
+  let sent = 0;
+  let skipped = 0;
+  let failed = 0;
+
+  for (const notice of notices) {
+    checked++;
+
+    const cleanNotice = {
+      source: "Dyal Singh College",
+      category,
+      title: String(notice.title || "").trim(),
+      url: cleanUrl(notice.url)
+    };
+
+    if (!cleanNotice.title || !cleanNotice.url) {
+      continue;
+    }
+
+    const noticeKey = makeNoticeKey(cleanNotice);
+
+    const encodedKey = encodeURIComponent(noticeKey);
+
+    const existing = await supabaseRequest(
+      `notices?select=id,sent&notice_key=eq.${encodedKey}&limit=1`
+    );
+
+    if (existing && existing.length > 0) {
+      skipped++;
+      continue;
+    }
+
+    // First run for a category:
+    // Save existing notices but don't send them.
+    if (isFirstRun) {
+      await supabaseRequest("notices", {
+        method: "POST",
+        headers: {
+          Prefer: "return=minimal"
+        },
+        body: JSON.stringify({
+          ...cleanNotice,
+          notice_key: noticeKey,
+          sent: false
+        })
+      });
+
+      inserted++;
+      continue;
+    }
+
+    // New notice
+    await supabaseRequest("notices", {
+      method: "POST",
+      headers: {
+        Prefer: "return=minimal"
+      },
+      body: JSON.stringify({
+        ...cleanNotice,
+        notice_key: noticeKey,
+        sent: false
+      })
+    });
+
+    inserted++;
+
+    try {
+      await sendTelegramMessage(cleanNotice);
+
+      await supabaseRequest(
+        `notices?notice_key=eq.${encodedKey}`,
+        {
+          method: "PATCH",
+          headers: {
+            Prefer: "return=minimal"
+          },
+          body: JSON.stringify({
+            sent: true
+          })
+        }
+      );
+
+      sent++;
+    } catch (telegramError) {
+      failed++;
+      console.error(telegramError);
+    }
+  }
+
+  return {
+    checked,
+    inserted,
+    sent,
+    skipped,
+    failed
+  };
+}
+
 export default async function handler(req, res) {
   try {
     if (!process.env.SUPABASE_URL) {
@@ -114,116 +221,65 @@ export default async function handler(req, res) {
       throw new Error("TELEGRAM_CHAT_ID is missing");
     }
 
-    // Fetch current DSC student notices
-    const notices = await getDSCStudentNotices();
+    // Fetch both categories
+    const studentNotices =
+      await getDSCStudentNotices();
 
-    let checked = 0;
-    let inserted = 0;
-    let sent = 0;
-    let skipped = 0;
-    let failed = 0;
+    const teachingNotices =
+      await getDSCTeachingNotices();
 
-    // Check whether database is empty.
-    // If empty, first run becomes our baseline.
+    // Check whether database already contains notices
     const existingRows = await supabaseRequest(
       "notices?select=id&limit=1"
     );
 
-    const isFirstRun =
-      !existingRows || existingRows.length === 0;
+    const databaseEmpty =
+      !existingRows ||
+      existingRows.length === 0;
 
-    for (const notice of notices) {
-      checked++;
-
-      const cleanNotice = {
-        source: notice.source,
-        category: notice.category,
-        title: notice.title.trim(),
-        url: cleanUrl(notice.url)
-      };
-
-      const noticeKey = makeNoticeKey(cleanNotice);
-
-      // Check whether notice already exists
-      const encodedKey = encodeURIComponent(noticeKey);
-
-      const existing = await supabaseRequest(
-        `notices?select=id,sent&notice_key=eq.${encodedKey}&limit=1`
+    const studentResult =
+      await processCategory(
+        studentNotices,
+        "Student",
+        databaseEmpty
       );
 
-      if (existing && existing.length > 0) {
-        skipped++;
-        continue;
-      }
+    /*
+     * If Student notices were already in the database,
+     * Teaching notices must still get their own baseline.
+     */
+    const teachingExistingRows =
+      await supabaseRequest(
+        "notices?select=id&category=eq.Teaching&limit=1"
+      );
 
-      // First run:
-      // Save existing notices but DON'T send them to Telegram.
-      if (isFirstRun) {
-        await supabaseRequest("notices", {
-          method: "POST",
-          headers: {
-            Prefer: "return=minimal"
-          },
-          body: JSON.stringify({
-            ...cleanNotice,
-            notice_key: noticeKey,
-            sent: false
-          })
-        });
+    const teachingFirstRun =
+      !teachingExistingRows ||
+      teachingExistingRows.length === 0;
 
-        inserted++;
-        continue;
-      }
-
-      // New notice
-      await supabaseRequest("notices", {
-        method: "POST",
-        headers: {
-          Prefer: "return=minimal"
-        },
-        body: JSON.stringify({
-          ...cleanNotice,
-          notice_key: noticeKey,
-          sent: false
-        })
-      });
-
-      inserted++;
-
-      try {
-        await sendTelegramMessage(cleanNotice);
-
-        // Mark as sent
-        await supabaseRequest(
-          `notices?notice_key=eq.${encodedKey}`,
-          {
-            method: "PATCH",
-            headers: {
-              Prefer: "return=minimal"
-            },
-            body: JSON.stringify({
-              sent: true
-            })
-          }
-        );
-
-        sent++;
-      } catch (telegramError) {
-        failed++;
-        console.error(telegramError);
-      }
-    }
+    const teachingResult =
+      await processCategory(
+        teachingNotices,
+        "Teaching",
+        teachingFirstRun
+      );
 
     return res.status(200).json({
       success: true,
-      mode: isFirstRun ? "BASELINE" : "MONITORING",
-      source: "Dyal Singh College",
-      category: "Student",
-      checked,
-      inserted,
-      sent,
-      skipped,
-      failed
+
+      student: {
+        mode: databaseEmpty
+          ? "BASELINE"
+          : "MONITORING",
+        ...studentResult
+      },
+
+      teaching: {
+        mode: teachingFirstRun
+          ? "BASELINE"
+          : "MONITORING",
+        ...teachingResult
+      }
     });
 
   } catch (error) {
@@ -234,4 +290,4 @@ export default async function handler(req, res) {
       error: error.message
     });
   }
-        }
+}
