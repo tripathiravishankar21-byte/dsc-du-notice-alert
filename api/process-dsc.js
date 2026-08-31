@@ -40,19 +40,28 @@ function makeNoticeKey(notice) {
 function classifyDUNotice(title) {
   const text = String(title || "").toLowerCase();
 
+  // Recruitment gets highest priority
   if (
+    text.includes("advertisement no.") ||
+    text.includes("advertisement no") ||
+    text.includes("recruitment") ||
     text.includes("assistant professor") ||
     text.includes("associate professor") ||
-    text.includes("professor") ||
-    text.includes("faculty research") ||
-    text.includes("faculty development") ||
-    text.includes("faculty of technology") ||
-    text.includes("teaching centre") ||
-    text.includes("teaching faculty")
+    text.includes("post of professor")
   ) {
-    return "Faculty / Teaching";
+    return "Recruitment";
   }
 
+  // Examination
+  if (
+    text.includes("examination") ||
+    text.includes("exam") ||
+    text.includes("result")
+  ) {
+    return "Examination";
+  }
+
+  // Student-related
   if (
     text.includes("admission") ||
     text.includes("cut-off") ||
@@ -68,25 +77,19 @@ function classifyDUNotice(title) {
     return "Student";
   }
 
+  // Faculty / Teaching
   if (
-    text.includes("recruitment") ||
-    text.includes("advertisement no.") ||
-    text.includes("advertisement no")
+    text.includes("faculty research") ||
+    text.includes("faculty development") ||
+    text.includes("faculty of technology") ||
+    text.includes("teaching centre") ||
+    text.includes("teaching faculty")
   ) {
-    return "Recruitment";
-  }
-
-  if (
-    text.includes("examination") ||
-    text.includes("exam") ||
-    text.includes("result")
-  ) {
-    return "Examination";
+    return "Faculty / Teaching";
   }
 
   return "General University";
 }
-
 
 /*
  * Prepare DU notices with a useful category.
