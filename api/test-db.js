@@ -1,3 +1,4 @@
+
 export default async function handler(req, res) {
   try {
     const supabaseUrl = process.env.SUPABASE_URL;
@@ -10,12 +11,25 @@ export default async function handler(req, res) {
       });
     }
 
+    const testNotice = {
+      source: "Test",
+      category: "Student",
+      title: "DSC Notice Alert - Database Test",
+      url: "https://www.dsc.du.ac.in/",
+      notice_key: "test-notice-001",
+      sent: false
+    };
+
     const response = await fetch(
-      `${supabaseUrl}/rest/v1/notices?select=id&limit=1`,
+      `${supabaseUrl}/rest/v1/notices`,
       {
+        method: "POST",
         headers: {
-          apikey: supabaseKey
-        }
+          "apikey": supabaseKey,
+          "Content-Type": "application/json",
+          "Prefer": "return=representation"
+        },
+        body: JSON.stringify(testNotice)
       }
     );
 
@@ -31,10 +45,10 @@ export default async function handler(req, res) {
 
     return res.status(200).json({
       success: true,
-      message: "Supabase connection successful!",
+      message: "Test notice inserted successfully!",
       database: "Connected",
       table: "notices",
-      response: text
+      inserted: JSON.parse(text)
     });
 
   } catch (error) {
