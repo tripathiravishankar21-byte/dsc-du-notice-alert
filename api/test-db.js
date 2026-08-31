@@ -14,18 +14,18 @@ export default async function handler(req, res) {
       `${supabaseUrl}/rest/v1/notices?select=id&limit=1`,
       {
         headers: {
-          apikey: supabaseKey,
-          Authorization: `Bearer ${supabaseKey}`
+          apikey: supabaseKey
         }
       }
     );
 
-    const data = await response.json();
+    const text = await response.text();
 
     if (!response.ok) {
       return res.status(response.status).json({
         success: false,
-        error: data
+        status: response.status,
+        response: text
       });
     }
 
@@ -33,7 +33,8 @@ export default async function handler(req, res) {
       success: true,
       message: "Supabase connection successful!",
       database: "Connected",
-      table: "notices"
+      table: "notices",
+      response: text
     });
 
   } catch (error) {
