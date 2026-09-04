@@ -15,7 +15,6 @@ export default async function handler(req, res) {
 
     const message = update.message;
 
-    // Ignore bot messages
     if (message.from?.is_bot) {
       return res.status(200).json({ success: true });
     }
@@ -31,12 +30,10 @@ export default async function handler(req, res) {
 
     const BOT_USERNAME = "dsc_du_notice_alert_bot";
 
-    // Respond only when bot is mentioned
     if (!text.toLowerCase().includes(`@${BOT_USERNAME}`.toLowerCase())) {
       return res.status(200).json({ success: true });
     }
 
-    // Remove bot mention
     const question = text
       .replace(new RegExp(`@${BOT_USERNAME}`, "ig"), "")
       .trim();
@@ -97,6 +94,10 @@ export default async function handler(req, res) {
 
     let conversation;
 
+    // ==================================================
+    // 2. Create conversation if needed
+    // ==================================================
+
     if (conversations.length === 0) {
       const createConversationResponse = await fetch(
         `${supabaseUrl}/rest/v1/ai_conversations`,
@@ -110,7 +111,11 @@ export default async function handler(req, res) {
             chat_id: chatId,
             user_id: userId,
             user_name: userName,
-            topic: null
+            topic: null,
+            study_mode: false,
+            study_subject: null,
+            study_topic: null,
+            practice_type: null
           })
         }
       );
@@ -132,7 +137,235 @@ export default async function handler(req, res) {
     const conversationId = conversation.id;
 
     // ==================================================
-    // 2. Get conversation history
+    // 3. Study Mode
+    // ==================================================
+
+    const lowerQuestion = question.toLowerCase().trim();
+
+    // ---------- START STUDY MODE ----------
+
+    if (
+      lowerQuestion === "start study mode" ||
+      lowerQuestion === "study mode" ||
+      lowerQuestion === "start studying"
+    ) {
+      const responseText =
+        `📚 Study Mode\n\n` +
+        `Hi ${userName}! Let's start studying.\n\n` +
+        `What do you want to study?\n\n` +
+        `1️⃣ DSA\n` +
+        `2️⃣ Operating System\n` +
+        `3️⃣ DBMS\n` +
+        `4️⃣ Computer Networks\n` +
+        `5️⃣ Other`;
+
+      await updateConversation(
+        supabaseUrl,
+        supabaseHeaders,
+        conversationId,
+        {
+          study_mode: true,
+          study_subject: null,
+          study_topic: null,
+          practice_type: null
+        }
+      );
+
+      await sendTelegram(
+        telegramToken,
+        chatId,
+        responseText
+      );
+
+      return res.status(200).json({
+        success: true,
+        mode: "study",
+        step: "subject"
+      });
+    }
+
+    // ---------- STUDY MODE ACTIVE ----------
+
+    if (conversation.study_mode === true) {
+
+      // SUBJECT SELECTION
+      if (!conversation.study_subject) {
+        const subjectMap = {
+          "1": "DSA",
+          "dsa": "DSA",
+
+          "2": "Operating System",
+          "operating system": "Operating System",
+          "os": "Operating System",
+
+          "3": "DBMS",
+          "dbms": "DBMS",
+
+          "4": "Computer Networks",
+          "computer networks": "Computer Networks",
+          "cn": "Computer Networks"
+        };
+
+        let subject = subjectMap[lowerQuestion];
+
+        if (lowerQuestion === "5" || lowerQuestion === "other") {
+          subject = question;
+        }
+
+        if (!subject) {
+          await sendTelegram(
+            telegramToken,
+            chatId,
+            `📚 Please select a subject:\n\n` +
+            `1️⃣ DSA\n` +
+            `2️⃣ Operating System\n` +
+            `3️⃣ DBMS\n` +
+            `4️⃣ Computer Networks\n` +
+            `5️⃣ Other`
+          );
+
+          return res.status(200).json({
+            success: true,
+            mode: "study",
+            step: "subject"
+          });
+        }
+
+        await updateConversation(
+          supabaseUrl,
+          supabaseHeaders,
+          conversationId,
+          {
+            study_subject: subject,
+            study_topic: null,
+            practice_type: null
+          }
+        );
+
+        await sendTelegram(
+          telegramToken,
+          chatId,
+          `📖 Great! ${subject} selected.\n\n` +
+          `What topic do you want to practice?\n\n` +
+          `For example:\n` +
+          `• Linked List\n` +
+          `• Stack\n` +
+          `• Queue\n` +
+          `• Trees\n` +
+          `• Graph\n` +
+          `• Sorting\n\n` +
+          `✍️ Type your topic.`
+        );
+
+        return res.status(200).json({
+          success: true,
+          mode: "study",
+          step: "topic",
+          subject
+        });
+      }
+
+      // TOPIC SELECTION
+      if (!conversation.study_topic) {
+        const topic = question;
+
+        await updateConversation(
+          supabaseUrl,
+          supabaseHeaders,
+          conversationId,
+          {
+            study_topic: topic,
+            practice_type: null
+          }
+        );
+
+        await sendTelegram(
+          telegramToken,
+          chatId,
+          `📚 Subject: ${conversation.study_subject}\n` +
+          `📖 Topic: ${topic}\n\n` +
+          `📝 How do you want to practice?\n\n` +
+          `1️⃣ Objective\n` +
+          `2️⃣ Subjective`
+        );
+
+        return res.status(200).json({
+          success: true,
+          mode: "study",
+          step: "practice_type",
+          subject: conversation.study_subject,
+          topic
+        });
+      }
+
+      // PRACTICE TYPE
+      if (!conversation.practice_type) {
+        let practiceType = null;
+
+        if (
+          lowerQuestion === "1" ||
+          lowerQuestion === "objective" ||
+          lowerQuestion === "mcq"
+        ) {
+          practiceType = "Objective";
+        }
+
+        if (
+          lowerQuestion === "2" ||
+          lowerQuestion === "subjective"
+        ) {
+          practiceType = "Subjective";
+        }
+
+        if (!practiceType) {
+          await sendTelegram(
+            telegramToken,
+            chatId,
+            `📝 Please choose one:\n\n` +
+            `1️⃣ Objective\n` +
+            `2️⃣ Subjective`
+          );
+
+          return res.status(200).json({
+            success: true,
+            mode: "study",
+            step: "practice_type"
+          });
+        }
+
+        await updateConversation(
+          supabaseUrl,
+          supabaseHeaders,
+          conversationId,
+          {
+            practice_type: practiceType
+          }
+        );
+
+        await sendTelegram(
+          telegramToken,
+          chatId,
+          `✅ Study setup complete!\n\n` +
+          `📚 Subject: ${conversation.study_subject}\n` +
+          `📖 Topic: ${conversation.study_topic}\n` +
+          `📝 Type: ${practiceType}\n\n` +
+          `🎯 Practice system is ready.\n\n` +
+          `The next step will be question generation.`
+        );
+
+        return res.status(200).json({
+          success: true,
+          mode: "study",
+          step: "ready",
+          subject: conversation.study_subject,
+          topic: conversation.study_topic,
+          practice_type: practiceType
+        });
+      }
+    }
+
+    // ==================================================
+    // 4. Conversation history
     // ==================================================
 
     const messagesUrl =
@@ -165,7 +398,7 @@ export default async function handler(req, res) {
     }));
 
     // ==================================================
-    // 3. Save user's question
+    // 5. Save user message
     // ==================================================
 
     const saveUserMessageResponse = await fetch(
@@ -190,10 +423,8 @@ export default async function handler(req, res) {
     }
 
     // ==================================================
-    // 4. Detect whether this is a notice-related question
+    // 6. Notice detection
     // ==================================================
-
-    const lowerQuestion = question.toLowerCase();
 
     const noticeKeywords = [
       "notice",
@@ -226,10 +457,6 @@ export default async function handler(req, res) {
     );
 
     let noticeContext = "";
-
-    // ==================================================
-    // 5. Fetch notices when needed
-    // ==================================================
 
     if (isNoticeQuestion) {
       const noticesUrl =
@@ -268,20 +495,21 @@ export default async function handler(req, res) {
           })
           .join("\n\n");
       } else {
-        noticeContext = "No notices are currently stored in the database.";
+        noticeContext =
+          "No notices are currently stored in the database.";
       }
     }
 
     // ==================================================
-    // 6. Build AI prompt
+    // 7. AI
     // ==================================================
 
     const systemPrompt =
-      "You are a helpful AI study assistant inside a Telegram group. " +
-      "Answer accurately, clearly, and naturally. " +
+      "You are a helpful AI assistant inside a Telegram group. " +
+      "Answer accurately and clearly. " +
       "Match the user's language and style, including Hindi, English, or Hinglish. " +
       "For educational questions, explain concepts simply with examples. " +
-      "Use previous conversation context when it is relevant. " +
+      "Use previous conversation context when relevant. " +
       "Never assume messages from other group members belong to this user's conversation.";
 
     const aiMessages = [
@@ -297,11 +525,8 @@ export default async function handler(req, res) {
         role: "system",
         content:
           "The user is asking about DSC/DU notices. " +
-          "Use the following notices retrieved directly from the bot's database. " +
-          "Do not invent notice information. " +
-          "If the requested information is not present, clearly say that it was not found in the currently stored notices. " +
-          "When useful, provide the notice title, source/category, date, and URL.\n\n" +
-          "DATABASE NOTICES:\n" +
+          "Use the following notices retrieved from the database. " +
+          "Do not invent information.\n\n" +
           noticeContext
       });
     }
@@ -310,10 +535,6 @@ export default async function handler(req, res) {
       role: "user",
       content: question
     });
-
-    // ==================================================
-    // 7. Ask UnoRouter
-    // ==================================================
 
     const aiResponse = await fetch(
       "https://api.unorouter.com/v1/chat/completions",
@@ -373,7 +594,7 @@ export default async function handler(req, res) {
     }
 
     // ==================================================
-    // 9. Send answer to Telegram
+    // 9. Send answer
     // ==================================================
 
     const telegramText =
@@ -387,36 +608,17 @@ export default async function handler(req, res) {
         ? telegramText.substring(0, 3897) + "..."
         : telegramText;
 
-    const telegramResponse = await fetch(
-      `https://api.telegram.org/bot${telegramToken}/sendMessage`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          chat_id: chatId,
-          text: finalText
-        })
-      }
+    await sendTelegram(
+      telegramToken,
+      chatId,
+      finalText
     );
-
-    if (!telegramResponse.ok) {
-      throw new Error(
-        `Telegram sendMessage failed: ${
-          await telegramResponse.text()
-        }`
-      );
-    }
-
-    const telegramData = await telegramResponse.json();
 
     return res.status(200).json({
       success: true,
       memory: true,
       notice_search: isNoticeQuestion,
-      conversation_id: conversationId,
-      telegram_message_id: telegramData?.result?.message_id
+      conversation_id: conversationId
     });
 
   } catch (error) {
@@ -427,4 +629,67 @@ export default async function handler(req, res) {
       error: error.message
     });
   }
+}
+
+
+// ======================================================
+// Helper: Update conversation
+// ======================================================
+
+async function updateConversation(
+  supabaseUrl,
+  headers,
+  conversationId,
+  fields
+) {
+  const response = await fetch(
+    `${supabaseUrl}/rest/v1/ai_conversations?id=eq.${encodeURIComponent(conversationId)}`,
+    {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify(fields)
+    }
+  );
+
+  if (!response.ok) {
+    throw new Error(
+      `Conversation update failed: ${await response.text()}`
+    );
+  }
+}
+
+
+// ======================================================
+// Helper: Send Telegram message
+// ======================================================
+
+async function sendTelegram(
+  telegramToken,
+  chatId,
+  text
+) {
+  const response = await fetch(
+    `https://api.telegram.org/bot${telegramToken}/sendMessage`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text:
+          text.length > 3900
+            ? text.substring(0, 3897) + "..."
+            : text
+      })
+    }
+  );
+
+  if (!response.ok) {
+    throw new Error(
+      `Telegram sendMessage failed: ${await response.text()}`
+    );
+  }
+
+  return response.json();
 }
