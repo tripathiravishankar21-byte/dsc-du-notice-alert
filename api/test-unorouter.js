@@ -18,19 +18,21 @@ export default async function handler(req, res) {
           "Authorization": `Bearer ${apiKey}`
         },
         body: JSON.stringify({
-          model: "gpt-oss-120b:free",
+          model: "glm-5.3-flash:free",
           messages: [
             {
               role: "system",
               content:
-                "You are a helpful AI assistant. Answer clearly and naturally."
+                "You are a helpful AI assistant. Answer clearly, accurately and naturally."
             },
             {
               role: "user",
-              content: "Hello! Please introduce yourself in one short paragraph."
+              content:
+                "Hello! Please introduce yourself in one short paragraph."
             }
           ],
-          temperature: 0.7
+          temperature: 0.7,
+          max_tokens: 300
         })
       }
     );
@@ -50,7 +52,7 @@ export default async function handler(req, res) {
     return res.status(200).json({
       success: true,
       message: "UnoRouter API is working!",
-      model: data.model || "gpt-oss-120b:free",
+      model: data?.model || "glm-5.3-flash:free",
       answer: answer || null
     });
 
