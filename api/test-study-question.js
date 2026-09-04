@@ -1,16 +1,15 @@
 export default async function handler(req, res) {
   if (req.method !== "GET") {
-    return res.status(405).json({
-      success: false,
-      error: "Only GET method is allowed"
-    });
+    return res.status(405).json({ error: "Method not allowed" });
   }
 
   try {
-    const unoRouterKey = process.env.UNOROUTER_API_KEY;
+    const apiKey = process.env.UNOROUTER_API_KEY;
 
-    if (!unoRouterKey) {
-      throw new Error("UNOROUTER_API_KEY is missing");
+    if (!apiKey) {
+      return res.status(500).json({
+        error: "UNOROUTER_API_KEY is missing"
+      });
     }
 
     const subject = "DSA";
@@ -26,7 +25,7 @@ Difficulty: ${difficulty}
 
 Return ONLY valid JSON.
 Do not use markdown.
-Do not put JSON inside code fences.
+Do not use code fences.
 
 Required JSON format:
 
@@ -36,15 +35,15 @@ Required JSON format:
   "option_b": "Option B",
   "option_c": "Option C",
   "option_d": "Option D",
-  "correct_answer": "C",
+  "correct_answer": "A",
   "explanation": "Short explanation"
 }
 
 Rules:
 - correct_answer must be exactly A, B, C, or D.
-- Only one option can be correct.
-- The explanation must explain why the correct answer is correct.
-- Make the question technically accurate.
+- Only one option must be correct.
+- The question should genuinely test ${topic}.
+- Keep the explanation short and educational.
 `;
 
     const response = await fetch(
@@ -53,7 +52,7 @@ Rules:
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${unoRouterKey}`
+          Authorization: `Bearer ${apiKey}`
         },
         body: JSON.stringify({
           model: "glm-5.3-flash:free",
@@ -61,50 +60,67 @@ Rules:
             {
               role: "system",
               content:
-                "You are a precise computer science question generator. " +
-                "Always follow the requested JSON format exactly."
+                "You are an expert computer science exam question generator."
             },
             {
               role: "user",
               content: prompt
             }
           ],
-          temperature: 0.3,
-          max_tokens: 700
+          temperature: 0.4,
+          max_tokens: 500
         })
       }
     );
 
+    const rawText = await response.text();
+
     if (!response.ok) {
-      throw new Error(
-        `UnoRouter failed: ${await response.text()}`
-      );
+      return res.status(500).json({
+        error: "UnoRouter request failed",
+        status: response.status,
+        details: rawText
+      });
     }
 
-    const data = await response.json();
+    let data;
 
-    const rawAnswer =
-      data?.choices?.[0]?.message?.content?.trim();
-
-    if (!rawAnswer) {
-      throw new Error("AI returned an empty response");
+    try {
+      data = JSON.parse(rawText);
+    } catch {
+      return res.status(500).json({
+        error: "UnoRouter returned invalid JSON",
+        raw: rawText
+      });
     }
 
-    // Remove accidental markdown code fences
-    const cleanedAnswer = rawAnswer
-      .replace(/^```json\s*/i, "")
-      .replace(/^```\s*/i, "")
-      .replace(/\s*```$/i, "")
-      .trim();
+    const content = data?.choices?.[0]?.message?.content;
+
+    if (!content) {
+      return res.status(500).json({
+        error: "No AI response content",
+        response: data
+      });
+    }
+
+    let cleanContent = content.trim();
+
+    if (cleanContent.startsWith("```")) {
+      cleanContent = cleanContent
+        .replace(/^```(?:json)?/i, "")
+        .replace(/```$/i, "")
+        .trim();
+    }
 
     let question;
 
     try {
-      question = JSON.parse(cleanedAnswer);
+      question = JSON.parse(cleanContent);
     } catch {
-      throw new Error(
-        `AI did not return valid JSON: ${cleanedAnswer}`
-      );
+      return res.status(500).json({
+        error: "AI response was not valid question JSON",
+        raw: content
+      });
     }
 
     const requiredFields = [
@@ -118,22 +134,25 @@ Rules:
     ];
 
     for (const field of requiredFields) {
-      if (!question[field]) {
-        throw new Error(
-          `Missing field: ${field}`
-        );
+      if (
+        !question[field] ||
+        typeof question[field] !== "string"
+      ) {
+        return res.status(500).json({
+          error: `Missing or invalid field: ${field}`,
+          question
+        });
       }
     }
 
-    const correctAnswer =
-      String(question.correct_answer)
-        .trim()
-        .toUpperCase();
+    question.correct_answer =
+      question.correct_answer.trim().toUpperCase();
 
-    if (!["A", "B", "C", "D"].includes(correctAnswer)) {
-      throw new Error(
-        "correct_answer must be A, B, C, or D"
-      );
+    if (!["A", "B", "C", "D"].includes(question.correct_answer)) {
+      return res.status(500).json({
+        error: "Invalid correct_answer",
+        question
+      });
     }
 
     return res.status(200).json({
@@ -141,17 +160,12 @@ Rules:
       subject,
       topic,
       difficulty,
-      question: {
-        ...question,
-        correct_answer: correctAnswer
-      }
+      question
     });
-
   } catch (error) {
     console.error("Study question error:", error);
 
     return res.status(500).json({
-      success: false,
       error: error.message
     });
   }
