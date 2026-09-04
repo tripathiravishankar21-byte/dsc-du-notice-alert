@@ -15,7 +15,7 @@ export default async function handler(req, res) {
 
     const message = update.message;
 
-    // Ignore messages sent by bots
+    // Ignore bot messages
     if (message.from?.is_bot) {
       return res.status(200).json({ success: true });
     }
@@ -31,12 +31,12 @@ export default async function handler(req, res) {
 
     const BOT_USERNAME = "dsc_du_notice_alert_bot";
 
-    // Only respond when the bot is mentioned
+    // Respond only when bot is mentioned
     if (!text.toLowerCase().includes(`@${BOT_USERNAME}`.toLowerCase())) {
       return res.status(200).json({ success: true });
     }
 
-    // Remove bot mention from the question
+    // Remove bot mention
     const question = text
       .replace(new RegExp(`@${BOT_USERNAME}`, "ig"), "")
       .trim();
@@ -65,9 +65,9 @@ export default async function handler(req, res) {
       "Content-Type": "application/json"
     };
 
-    // --------------------------------------------------
-    // 1. Find this user's conversation in this group
-    // --------------------------------------------------
+    // ==================================================
+    // 1. Find user's conversation
+    // ==================================================
 
     const conversationSearchUrl =
       `${supabaseUrl}/rest/v1/ai_conversations` +
@@ -86,19 +86,16 @@ export default async function handler(req, res) {
     );
 
     if (!conversationSearchResponse.ok) {
-      const errorText = await conversationSearchResponse.text();
       throw new Error(
-        `Supabase conversation search failed: ${errorText}`
+        `Supabase conversation search failed: ${
+          await conversationSearchResponse.text()
+        }`
       );
     }
 
     const conversations = await conversationSearchResponse.json();
 
     let conversation;
-
-    // --------------------------------------------------
-    // 2. Create conversation if this user has none
-    // --------------------------------------------------
 
     if (conversations.length === 0) {
       const createConversationResponse = await fetch(
@@ -119,9 +116,10 @@ export default async function handler(req, res) {
       );
 
       if (!createConversationResponse.ok) {
-        const errorText = await createConversationResponse.text();
         throw new Error(
-          `Supabase conversation creation failed: ${errorText}`
+          `Supabase conversation creation failed: ${
+            await createConversationResponse.text()
+          }`
         );
       }
 
@@ -133,9 +131,9 @@ export default async function handler(req, res) {
 
     const conversationId = conversation.id;
 
-    // --------------------------------------------------
-    // 3. Get recent conversation history
-    // --------------------------------------------------
+    // ==================================================
+    // 2. Get conversation history
+    // ==================================================
 
     const messagesUrl =
       `${supabaseUrl}/rest/v1/ai_messages` +
@@ -150,15 +148,15 @@ export default async function handler(req, res) {
     });
 
     if (!messagesResponse.ok) {
-      const errorText = await messagesResponse.text();
       throw new Error(
-        `Supabase message history failed: ${errorText}`
+        `Supabase message history failed: ${
+          await messagesResponse.text()
+        }`
       );
     }
 
     const historyRows = await messagesResponse.json();
 
-    // Reverse so oldest message comes first
     historyRows.reverse();
 
     const history = historyRows.map((item) => ({
@@ -166,9 +164,9 @@ export default async function handler(req, res) {
       content: item.message
     }));
 
-    // --------------------------------------------------
-    // 4. Save user's new message
-    // --------------------------------------------------
+    // ==================================================
+    // 3. Save user's question
+    // ==================================================
 
     const saveUserMessageResponse = await fetch(
       `${supabaseUrl}/rest/v1/ai_messages`,
@@ -184,33 +182,138 @@ export default async function handler(req, res) {
     );
 
     if (!saveUserMessageResponse.ok) {
-      const errorText = await saveUserMessageResponse.text();
       throw new Error(
-        `Supabase user message save failed: ${errorText}`
+        `Supabase user message save failed: ${
+          await saveUserMessageResponse.text()
+        }`
       );
     }
 
-    // --------------------------------------------------
-    // 5. Ask UnoRouter AI
-    // --------------------------------------------------
+    // ==================================================
+    // 4. Detect whether this is a notice-related question
+    // ==================================================
+
+    const lowerQuestion = question.toLowerCase();
+
+    const noticeKeywords = [
+      "notice",
+      "notices",
+      "notification",
+      "notifications",
+      "circular",
+      "announcement",
+      "latest update",
+      "latest updates",
+      "latest notice",
+      "latest notices",
+      "dsc notice",
+      "du notice",
+      "college notice",
+      "university notice",
+      "exam notice",
+      "admission notice",
+      "result notice",
+      "recruitment notice",
+      "vacancy notice",
+      "holiday notice",
+      "date sheet",
+      "deadline",
+      "last date"
+    ];
+
+    const isNoticeQuestion = noticeKeywords.some((keyword) =>
+      lowerQuestion.includes(keyword)
+    );
+
+    let noticeContext = "";
+
+    // ==================================================
+    // 5. Fetch notices when needed
+    // ==================================================
+
+    if (isNoticeQuestion) {
+      const noticesUrl =
+        `${supabaseUrl}/rest/v1/notices` +
+        `?select=source,category,title,url,notice_date,detected_at` +
+        `&order=detected_at.desc` +
+        `&limit=30`;
+
+      const noticesResponse = await fetch(noticesUrl, {
+        method: "GET",
+        headers: supabaseHeaders
+      });
+
+      if (!noticesResponse.ok) {
+        throw new Error(
+          `Supabase notices search failed: ${
+            await noticesResponse.text()
+          }`
+        );
+      }
+
+      const notices = await noticesResponse.json();
+
+      if (notices.length > 0) {
+        noticeContext = notices
+          .map((notice, index) => {
+            return (
+              `Notice ${index + 1}:\n` +
+              `Source: ${notice.source || "Unknown"}\n` +
+              `Category: ${notice.category || "Unknown"}\n` +
+              `Title: ${notice.title || "Untitled"}\n` +
+              `Notice date: ${notice.notice_date || "Unknown"}\n` +
+              `Detected: ${notice.detected_at || "Unknown"}\n` +
+              `URL: ${notice.url || "No URL"}`
+            );
+          })
+          .join("\n\n");
+      } else {
+        noticeContext = "No notices are currently stored in the database.";
+      }
+    }
+
+    // ==================================================
+    // 6. Build AI prompt
+    // ==================================================
+
+    const systemPrompt =
+      "You are a helpful AI study assistant inside a Telegram group. " +
+      "Answer accurately, clearly, and naturally. " +
+      "Match the user's language and style, including Hindi, English, or Hinglish. " +
+      "For educational questions, explain concepts simply with examples. " +
+      "Use previous conversation context when it is relevant. " +
+      "Never assume messages from other group members belong to this user's conversation.";
 
     const aiMessages = [
       {
         role: "system",
-        content:
-          "You are a helpful AI study assistant inside a Telegram group. " +
-          "Answer accurately and clearly. " +
-          "Match the user's language and style, including Hindi, English, or Hinglish. " +
-          "For educational questions, explain concepts simply with useful examples. " +
-          "Use the previous conversation context when it is relevant. " +
-          "Do not assume that messages from other group members are part of this user's conversation."
+        content: systemPrompt
       },
-      ...history,
-      {
-        role: "user",
-        content: question
-      }
+      ...history
     ];
+
+    if (isNoticeQuestion) {
+      aiMessages.push({
+        role: "system",
+        content:
+          "The user is asking about DSC/DU notices. " +
+          "Use the following notices retrieved directly from the bot's database. " +
+          "Do not invent notice information. " +
+          "If the requested information is not present, clearly say that it was not found in the currently stored notices. " +
+          "When useful, provide the notice title, source/category, date, and URL.\n\n" +
+          "DATABASE NOTICES:\n" +
+          noticeContext
+      });
+    }
+
+    aiMessages.push({
+      role: "user",
+      content: question
+    });
+
+    // ==================================================
+    // 7. Ask UnoRouter
+    // ==================================================
 
     const aiResponse = await fetch(
       "https://api.unorouter.com/v1/chat/completions",
@@ -224,15 +327,14 @@ export default async function handler(req, res) {
           model: "glm-5.3-flash:free",
           messages: aiMessages,
           temperature: 0.7,
-          max_tokens: 1200
+          max_tokens: 1400
         })
       }
     );
 
     if (!aiResponse.ok) {
-      const errorText = await aiResponse.text();
       throw new Error(
-        `UnoRouter request failed: ${errorText}`
+        `UnoRouter request failed: ${await aiResponse.text()}`
       );
     }
 
@@ -245,9 +347,9 @@ export default async function handler(req, res) {
       throw new Error("AI returned an empty answer");
     }
 
-    // --------------------------------------------------
-    // 6. Save AI response
-    // --------------------------------------------------
+    // ==================================================
+    // 8. Save AI answer
+    // ==================================================
 
     const saveAssistantMessageResponse = await fetch(
       `${supabaseUrl}/rest/v1/ai_messages`,
@@ -263,15 +365,16 @@ export default async function handler(req, res) {
     );
 
     if (!saveAssistantMessageResponse.ok) {
-      const errorText = await saveAssistantMessageResponse.text();
       throw new Error(
-        `Supabase assistant message save failed: ${errorText}`
+        `Supabase assistant message save failed: ${
+          await saveAssistantMessageResponse.text()
+        }`
       );
     }
 
-    // --------------------------------------------------
-    // 7. Send answer to Telegram
-    // --------------------------------------------------
+    // ==================================================
+    // 9. Send answer to Telegram
+    // ==================================================
 
     const telegramText =
       `🤖 AI Assistant\n\n` +
@@ -279,7 +382,6 @@ export default async function handler(req, res) {
       `❓ ${question}\n\n` +
       `💡 ${answer}`;
 
-    // Telegram message limit protection
     const finalText =
       telegramText.length > 3900
         ? telegramText.substring(0, 3897) + "..."
@@ -300,9 +402,10 @@ export default async function handler(req, res) {
     );
 
     if (!telegramResponse.ok) {
-      const errorText = await telegramResponse.text();
       throw new Error(
-        `Telegram sendMessage failed: ${errorText}`
+        `Telegram sendMessage failed: ${
+          await telegramResponse.text()
+        }`
       );
     }
 
@@ -311,6 +414,7 @@ export default async function handler(req, res) {
     return res.status(200).json({
       success: true,
       memory: true,
+      notice_search: isNoticeQuestion,
       conversation_id: conversationId,
       telegram_message_id: telegramData?.result?.message_id
     });
